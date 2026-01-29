@@ -5,6 +5,7 @@ import useSWR from "swr"
 import { Users, Swords, Skull, Target, Shield } from "lucide-react"
 import { StatsCard } from "@/components/stats-card"
 import { LeaderboardTable, type PlayerStats } from "@/components/leaderboard-table"
+import { TopGainers } from "@/components/top-gainers"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 
@@ -93,6 +94,9 @@ export default function HomePage() {
             icon={Target}
           />
         </div>
+
+        {/* Top Gainers */}
+        <TopGainers players={players} period={period} />
 
         {/* Leaderboard */}
         <LeaderboardTable 
