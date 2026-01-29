@@ -7,19 +7,38 @@ export async function GET(request: Request) {
   
   const supabase = await createClient()
   
-  // Calculate the date range based on period
+  // Calculate the period start date based on fixed UTC midnight times
+  // All periods reset at 00:00 UTC (GMT)
   const now = new Date()
   let startDate: Date
   
+  // Get today's midnight UTC
+  const todayMidnightUTC = new Date(Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate(),
+    0, 0, 0, 0
+  ))
+  
   switch (period) {
     case "7d":
-      startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+      // Start of the week (7 days ago at midnight UTC)
+      // Find the most recent Monday at midnight UTC
+      const dayOfWeek = todayMidnightUTC.getUTCDay()
+      const daysToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1 // Sunday = 6 days back, else dayOfWeek - 1
+      startDate = new Date(todayMidnightUTC.getTime() - daysToMonday * 24 * 60 * 60 * 1000)
       break
     case "30d":
-      startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
+      // Start of the month (1st day at midnight UTC)
+      startDate = new Date(Date.UTC(
+        now.getUTCFullYear(),
+        now.getUTCMonth(),
+        1,
+        0, 0, 0, 0
+      ))
       break
-    default: // 24h
-      startDate = new Date(now.getTime() - 24 * 60 * 60 * 1000)
+    default: // 24h - Daily reset at midnight UTC
+      startDate = todayMidnightUTC
   }
 
   // Get all players
@@ -51,23 +70,32 @@ export async function GET(request: Request) {
 
   // Process stats in memory instead of per-player queries
   const playerStats = players.map((player) => {
-    // Get all stats for this player
+    // Get all stats for this player (sorted newest to oldest)
     const playerStatsRecords = statsArray.filter(s => s.player_id === player.id)
     
     // Latest stats (first record since sorted desc by recorded_at)
     const latestStats = playerStatsRecords[0] || null
     
-    // Find stats from before the period start (for baseline)
-    const periodStartStats = playerStatsRecords.find(
-      s => new Date(s.recorded_at) <= startDate
+    // Find the most recent stats recorded BEFORE the period started (this is the baseline)
+    // We look for stats that were recorded before startDate
+    const baselineStats = playerStatsRecords.find(
+      s => new Date(s.recorded_at) < startDate
     )
     
-    // If no stats before period, use the oldest stat as baseline
-    const baselineStats = periodStartStats || playerStatsRecords[playerStatsRecords.length - 1] || null
-
+    // Calculate kills change
+    let killsChange = 0
     const currentKills = latestStats?.kills || 0
-    const baselineKills = baselineStats?.kills || 0
-    const killsChange = currentKills - baselineKills
+    
+    if (baselineStats) {
+      // We have a baseline from before the period - calculate actual gains
+      killsChange = currentKills - baselineStats.kills
+    } else if (playerStatsRecords.length >= 2) {
+      // Player was added during this period but we have multiple syncs
+      // Use the oldest sync as baseline to show gains since tracking started
+      const oldestStats = playerStatsRecords[playerStatsRecords.length - 1]
+      killsChange = currentKills - oldestStats.kills
+    }
+    // If only 1 stat record exists, killsChange stays 0 (no history to compare)
 
     return {
       id: player.id,
