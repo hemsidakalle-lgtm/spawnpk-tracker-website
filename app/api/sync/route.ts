@@ -25,12 +25,21 @@ export async function POST() {
     let syncedCount = 0
     const errors: string[] = []
 
+    // Calculate current period dates (for baseline tracking)
+    const now = new Date()
+    const todayMidnightUTC = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0))
+    const dayOfWeek = todayMidnightUTC.getUTCDay()
+    const daysToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1
+    const weekStartUTC = new Date(todayMidnightUTC.getTime() - daysToMonday * 24 * 60 * 60 * 1000)
+    const monthStartUTC = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0))
+
     // Sync each player
     for (const player of players) {
       try {
         const stats = await fetchPlayerStats(player.username)
         
         if (stats) {
+          // Save current stats
           const { error: insertError } = await supabase.from("player_stats").insert({
             player_id: player.id,
             kills: stats.kills,
@@ -44,6 +53,35 @@ export async function POST() {
             errors.push(`Failed to save stats for ${player.username}: ${insertError.message}`)
           } else {
             syncedCount++
+            
+            // Create or update baselines for each period if they don't exist
+            // This ensures new players get their starting baseline recorded
+            const periods = [
+              { type: "daily", date: todayMidnightUTC.toISOString() },
+              { type: "weekly", date: weekStartUTC.toISOString() },
+              { type: "monthly", date: monthStartUTC.toISOString() },
+            ]
+            
+            for (const period of periods) {
+              // Check if baseline exists for this player and period
+              const { data: existingBaseline } = await supabase
+                .from("period_baselines")
+                .select("id")
+                .eq("player_id", player.id)
+                .eq("period_type", period.type)
+                .eq("period_start", period.date)
+                .maybeSingle()
+              
+              if (!existingBaseline) {
+                // Create new baseline with current kills
+                await supabase.from("period_baselines").insert({
+                  player_id: player.id,
+                  period_type: period.type,
+                  period_start: period.date,
+                  baseline_kills: stats.kills,
+                })
+              }
+            }
           }
         } else {
           errors.push(`Could not fetch stats for ${player.username}`)
