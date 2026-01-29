@@ -22,7 +22,7 @@ export async function GET(request: Request) {
       startDate = new Date(now.getTime() - 24 * 60 * 60 * 1000)
   }
 
-  // Get all players with their latest stats
+  // Get all players
   const { data: players, error: playersError } = await supabase
     .from("players")
     .select("id, username, display_name")
@@ -37,74 +37,50 @@ export async function GET(request: Request) {
     return NextResponse.json({ players: [], stats: { totalPlayers: 0, totalKills: 0, totalDeaths: 0, avgKdr: 0 } })
   }
 
-  // Get the latest stats for each player
-  const playerStats = await Promise.all(
-    players.map(async (player) => {
-      // Get the latest stats
-      const { data: latestStatsArr } = await supabase
-        .from("player_stats")
-        .select("*")
-        .eq("player_id", player.id)
-        .order("recorded_at", { ascending: false })
-        .limit(1)
-      
-      const latestStats = latestStatsArr?.[0] || null
+  // Fetch ALL stats in a single query (ordered by recorded_at desc)
+  const { data: allStats, error: statsError } = await supabase
+    .from("player_stats")
+    .select("*")
+    .order("recorded_at", { ascending: false })
 
-      // Get stats from BEFORE the start of the period to calculate kills change
-      // This gives us the baseline (what their kills were at the start of the period)
-      const { data: periodStartStatsArr } = await supabase
-        .from("player_stats")
-        .select("*")
-        .eq("player_id", player.id)
-        .lte("recorded_at", startDate.toISOString())
-        .order("recorded_at", { ascending: false })
-        .limit(1)
-      
-      const periodStartStats = periodStartStatsArr?.[0] || null
+  if (statsError) {
+    console.error("Error fetching stats:", statsError)
+  }
 
-      // Calculate kills change
-      // Only count kills if we have a baseline from BEFORE the period started
-      // If player was added during the period (no pre-period stats), use their oldest stat as baseline
-      let killsChange = 0
-      const currentKills = latestStats?.kills || 0
+  const statsArray = allStats || []
 
-      if (periodStartStats) {
-        // We have stats from before the period - calculate the difference
-        killsChange = currentKills - periodStartStats.kills
-      } else {
-        // No stats from before the period - player was added during this period
-        // Get their oldest recorded stat to use as baseline
-        const { data: oldestStatsArr } = await supabase
-          .from("player_stats")
-          .select("*")
-          .eq("player_id", player.id)
-          .order("recorded_at", { ascending: true })
-          .limit(1)
-        
-        const oldestStats = oldestStatsArr?.[0] || null
-        
-        if (oldestStats && latestStats && oldestStats.id !== latestStats.id) {
-          // We have multiple stat records - calculate difference between oldest and latest
-          killsChange = currentKills - oldestStats.kills
-        } else {
-          // Only one stat record exists (or none) - no change to report yet
-          killsChange = 0
-        }
-      }
+  // Process stats in memory instead of per-player queries
+  const playerStats = players.map((player) => {
+    // Get all stats for this player
+    const playerStatsRecords = statsArray.filter(s => s.player_id === player.id)
+    
+    // Latest stats (first record since sorted desc by recorded_at)
+    const latestStats = playerStatsRecords[0] || null
+    
+    // Find stats from before the period start (for baseline)
+    const periodStartStats = playerStatsRecords.find(
+      s => new Date(s.recorded_at) <= startDate
+    )
+    
+    // If no stats before period, use the oldest stat as baseline
+    const baselineStats = periodStartStats || playerStatsRecords[playerStatsRecords.length - 1] || null
 
-      return {
-        id: player.id,
-        username: player.username,
-        displayName: player.display_name,
-        kills: latestStats?.kills || 0,
-        deaths: latestStats?.deaths || 0,
-        kdr: latestStats?.kdr || 0,
-        streak: latestStats?.streak || 0,
-        elo: latestStats?.elo || 0,
-        killsChange,
-      }
-    })
-  )
+    const currentKills = latestStats?.kills || 0
+    const baselineKills = baselineStats?.kills || 0
+    const killsChange = currentKills - baselineKills
+
+    return {
+      id: player.id,
+      username: player.username,
+      displayName: player.display_name,
+      kills: latestStats?.kills || 0,
+      deaths: latestStats?.deaths || 0,
+      kdr: latestStats?.kdr || 0,
+      streak: latestStats?.streak || 0,
+      elo: latestStats?.elo || 0,
+      killsChange,
+    }
+  })
 
   // Sort by kills descending
   playerStats.sort((a, b) => b.kills - a.kills)
