@@ -50,7 +50,8 @@ export async function GET(request: Request) {
       
       const latestStats = latestStatsArr?.[0] || null
 
-      // Get stats from the start of the period to calculate kills change
+      // Get stats from BEFORE the start of the period to calculate kills change
+      // This gives us the baseline (what their kills were at the start of the period)
       const { data: periodStartStatsArr } = await supabase
         .from("player_stats")
         .select("*")
@@ -59,10 +60,20 @@ export async function GET(request: Request) {
         .order("recorded_at", { ascending: false })
         .limit(1)
       
-      let periodStartStats = periodStartStatsArr?.[0] || null
+      const periodStartStats = periodStartStatsArr?.[0] || null
 
-      // If no stats exist from before the period, get the oldest recorded stat as baseline
-      if (!periodStartStats) {
+      // Calculate kills change
+      // Only count kills if we have a baseline from BEFORE the period started
+      // If player was added during the period (no pre-period stats), use their oldest stat as baseline
+      let killsChange = 0
+      const currentKills = latestStats?.kills || 0
+
+      if (periodStartStats) {
+        // We have stats from before the period - calculate the difference
+        killsChange = currentKills - periodStartStats.kills
+      } else {
+        // No stats from before the period - player was added during this period
+        // Get their oldest recorded stat to use as baseline
         const { data: oldestStatsArr } = await supabase
           .from("player_stats")
           .select("*")
@@ -70,12 +81,16 @@ export async function GET(request: Request) {
           .order("recorded_at", { ascending: true })
           .limit(1)
         
-        periodStartStats = oldestStatsArr?.[0] || null
+        const oldestStats = oldestStatsArr?.[0] || null
+        
+        if (oldestStats && latestStats && oldestStats.id !== latestStats.id) {
+          // We have multiple stat records - calculate difference between oldest and latest
+          killsChange = currentKills - oldestStats.kills
+        } else {
+          // Only one stat record exists (or none) - no change to report yet
+          killsChange = 0
+        }
       }
-
-      const currentKills = latestStats?.kills || 0
-      const periodStartKills = periodStartStats?.kills || 0
-      const killsChange = currentKills - periodStartKills
 
       return {
         id: player.id,
